@@ -51,6 +51,8 @@ const (
 	F_DUPFD_CLOEXEC
 	EPOLLIN
 	EPOLL_CTL_ADD
+	EPOLL_CTL_DEL
+	PERF_FORMAT_TOTAL_TIME_ENABLED
 	EPOLL_CLOEXEC
 	O_CLOEXEC
 	O_NONBLOCK
@@ -292,3 +294,5 @@ func Fstat(fd int, stat *Stat_t) error {
 func SetsockoptInt(fd, level, opt, value int) error {
 	return errNonLinux
 }
+
+func Read(fd int, p []byte) (n int, err error) { return 0, errNonLinux }

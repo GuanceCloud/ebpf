@@ -10,15 +10,19 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/cilium/ebpf/internal"
 	"github.com/cilium/ebpf/internal/unix"
 )
 
 // perfEventRing is a page of metadata followed by
 // a variable number of pages which form a ring buffer.
 type perfEventRing struct {
-	fd   int
-	cpu  int
-	mmap []byte
+	fd      int
+	cpu     int
+	mmap    []byte
+	enabled uint64
+	checked bool
+	retired bool
 	ringReader
 }
 
@@ -113,6 +117,7 @@ func createPerfEvent(cpu, watermark int, overwritable bool) (int, error) {
 		Config:      unix.PERF_COUNT_SW_BPF_OUTPUT,
 		Bits:        uint64(bits),
 		Sample_type: unix.PERF_SAMPLE_RAW,
+		Read_format: unix.PERF_FORMAT_TOTAL_TIME_ENABLED,
 		Wakeup:      uint32(watermark),
 	}
 
@@ -122,6 +127,23 @@ func createPerfEvent(cpu, watermark int, overwritable bool) (int, error) {
 		return -1, fmt.Errorf("can't create perf event: %w", err)
 	}
 	return fd, nil
+}
+
+// CPU unplug detaches perf events and leaves them OFF, without necessarily
+// reporting POLLHUP. Enabled time must advance even when no samples arrive.
+func (ring *perfEventRing) detached() (bool, error) {
+	var value [16]byte
+	n, err := unix.Read(ring.fd, value[:])
+	if err != nil {
+		return false, fmt.Errorf("read perf enabled time: %w", err)
+	}
+	if n != len(value) {
+		return false, fmt.Errorf("short perf enabled time: %d", n)
+	}
+	enabled := internal.NativeEndian.Uint64(value[8:])
+	detached := ring.checked && enabled == ring.enabled
+	ring.enabled, ring.checked = enabled, true
+	return detached, nil
 }
 
 type ringReader interface {
@@ -150,6 +172,13 @@ func newForwardReader(meta *unix.PerfEventMmapPage, ring []byte) *forwardReader 
 }
 
 func (rr *forwardReader) loadHead() {
+	if runtime.GOARCH == "386" {
+		// Native 32-bit kernels publish an unsigned-long head in this u64
+		// field. Extend modulo 2^32 so consuming 4 GiB does not spin at EOF.
+		low := atomic.LoadUint32((*uint32)(unsafe.Pointer(&rr.meta.Data_head)))
+		rr.head = rr.tail + uint64(low-uint32(rr.tail))
+		return
+	}
 	rr.head = atomic.LoadUint64(&rr.meta.Data_head)
 }
 
@@ -230,7 +259,12 @@ func (rr *reverseReader) loadHead() {
 	rr.tail = rr.head
 
 	// Get the new head and starting reading from it.
-	rr.head = atomic.LoadUint64(&rr.meta.Data_head)
+	if runtime.GOARCH == "386" {
+		rr.head = uint64(atomic.LoadUint32((*uint32)(unsafe.Pointer(&rr.meta.Data_head))))
+		rr.tail = rr.head + uint64(uint32(rr.tail)-uint32(rr.head))
+	} else {
+		rr.head = atomic.LoadUint64(&rr.meta.Data_head)
+	}
 	rr.read = rr.head
 
 	if rr.tail-rr.head > uint64(cap(rr.ring)) {

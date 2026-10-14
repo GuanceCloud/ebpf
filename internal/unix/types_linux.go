@@ -200,3 +200,10 @@ func Fstat(fd int, stat *Stat_t) error {
 func SetsockoptInt(fd, level, opt, value int) error {
 	return linux.SetsockoptInt(fd, level, opt, value)
 }
+
+const (
+	EPOLL_CTL_DEL                  = linux.EPOLL_CTL_DEL
+	PERF_FORMAT_TOTAL_TIME_ENABLED = linux.PERF_FORMAT_TOTAL_TIME_ENABLED
+)
+
+func Read(fd int, p []byte) (n int, err error) { return linux.Read(fd, p) }

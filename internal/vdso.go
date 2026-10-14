@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"unsafe"
 
 	"github.com/cilium/ebpf/internal/unix"
 )
@@ -62,16 +63,28 @@ func vdsoMemoryAddress(r io.Reader) (uint64, error) {
 
 	// Loop through all tag/value pairs in auxv until we find `AT_SYSINFO_EHDR`,
 	// the address of a page containing the virtual Dynamic Shared Object (vDSO).
-	aux := struct{ Tag, Val uint64 }{}
+	// An auxv entry is a pair of C `unsigned long`s: 8 bytes each on LP64,
+	// 4 bytes each on ILP32, so the width must follow the host pointer size.
+	ptrSize := int(unsafe.Sizeof(uintptr(0)))
+	buf := make([]byte, 2*ptrSize)
 	for {
-		if err := binary.Read(r, NativeEndian, &aux); err != nil {
+		if _, err := io.ReadFull(r, buf); err != nil {
 			return 0, fmt.Errorf("reading auxv entry: %w", err)
 		}
 
-		switch aux.Tag {
+		var tag, val uint64
+		if ptrSize == 8 {
+			tag = NativeEndian.Uint64(buf)
+			val = NativeEndian.Uint64(buf[8:])
+		} else {
+			tag = uint64(NativeEndian.Uint32(buf))
+			val = uint64(NativeEndian.Uint32(buf[4:]))
+		}
+
+		switch tag {
 		case _AT_SYSINFO_EHDR:
-			if aux.Val != 0 {
-				return aux.Val, nil
+			if val != 0 {
+				return val, nil
 			}
 			return 0, fmt.Errorf("invalid vDSO address in auxv")
 		// _AT_NULL is always the last tag/val pair in the aux vector

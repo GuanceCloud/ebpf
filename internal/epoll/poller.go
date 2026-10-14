@@ -116,6 +116,19 @@ func (p *Poller) Add(fd int, id int) error {
 	return nil
 }
 
+// Remove unregisters an fd while its mapped buffer is still being drained.
+func (p *Poller) Remove(fd int) error {
+	p.epollMu.Lock()
+	defer p.epollMu.Unlock()
+	if p.epollFd == -1 {
+		return fmt.Errorf("epoll remove: %w", os.ErrClosed)
+	}
+	if err := unix.EpollCtl(p.epollFd, unix.EPOLL_CTL_DEL, fd, nil); err != nil {
+		return fmt.Errorf("remove fd from epoll: %w", err)
+	}
+	return nil
+}
+
 // Wait for events.
 //
 // Returns the number of pending events or an error wrapping os.ErrClosed if
